@@ -1,10 +1,16 @@
 import datetime
 import requests
 import json
+import os
+import shutil
 
 start_date = datetime.date(2025, 4, 1)
 end_date = datetime.date(2025, 4, 14)
 file_dir = "./raw_data/"
+
+if os.path.exists(file_dir):
+    shutil.rmtree(file_dir)
+os.makedirs(file_dir)
 
 responses = []
 
