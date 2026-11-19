@@ -1,75 +1,146 @@
-# Attribution Data API
-====================================
+# Fake Adjust — Attribution Data API
 
+[![CI](https://github.com/Gasta88/fake_adjust/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Gasta88/fake_adjust/actions/workflows/ci.yml)
 
-## Description
----------------
+A small FastAPI service that serves **synthetic Adjust-style attribution reports** over
+HTTP. It is **stage 1 of a three-stage data pipeline**: downstream stages need a
+realistic, predictable feed to schedule against, load into a warehouse and model — this
+is that feed. It is not connected to any real ad network, does not collect real data and
+stores nothing.
 
-This is an experiment to set up a fake attribution data API for a non-specific mobile application.
-The `main.py` file contains the main API code using FastAPI. It defines an endpoint for fetching reporting data. Below are the details of the available query parameters and the structure of the data returned by the API.
+## Pipeline context
 
-#### Endpoint
-- **GET** `/reporting`
+1. **fake_adjust** (this repository) — serves synthetic reports at `/reporting`; deployed
+   separately from the downstream stages.
+2. **[fake_adjust_serverless_service](https://github.com/Gasta88/fake_adjust_serverless_service)**
+   — schedules calls to this API, downloads the reports and loads them into BigQuery.
+3. **Dataform** — builds the materialised views on top of the BigQuery tables (outside
+   this repository).
 
-#### Query Parameters
-- `start_date` (str): The start date for the reporting period in `YYYY-MM-DD` format. Example: `2025-05-01`
-- `end_date` (str): The end date for the reporting period in `YYYY-MM-DD` format. Example: `2025-05-01`
-- `platform` (str): The platform for which the data is requested. Must be either `ios` or `android`.
+The stage-2 consumer maps the response fields into its BigQuery schema. The field names
+below — including the `convertion` spelling — are therefore a **frozen wire contract**;
+renaming them would break the downstream load.
 
-#### Response Data
-The API returns a JSON array of objects with the following fields:
+## Quickstart
 
-- `installs` (int): Number of installs.
-- `ad_spend` (float): Amount spent on ads.
-- `clicks` (int): Number of ad clicks.
-- `impressions` (int): Number of ad impressions.
-- `click_convertion_rate` (float): Install to click conversion rate in percentage.
-- `click_through_rate` (float): Click to impression conversion rate in percentage.
-- `impressions_convertion_rate` (float): Install to impression conversion rate in percentage.
-- `limit_ad_tracking_installs` (int): Number of installs with limited ad tracking.
-- `uninstalls` (int): Number of uninstalls.
-- `campaign_name` (str): Name of the campaign.
-- `creative_name` (str): Name of the creative.
-- `ad_network_name` (str): Name of the ad network.
-- `start_date` (str): Start date of the data period.
-- `end_date` (str): End date of the data period.
-- `platform` (str): Platform for which the data is reported (`ios` or `android`).
+### Docker (recommended)
 
-This information helps users understand what query parameters they can use when making requests to the API and what kind of data they can expect in response.
+```bash
+make all     # docker build + run on http://127.0.0.1:8000
+curl "http://127.0.0.1:8000/reporting?start_date=2025-05-01&end_date=2025-05-01&platform=ios"
+make clean   # remove the container and image
+```
 
+### Local Python 3.11+
 
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+make install-dev
+uvicorn main:app --reload
+```
 
-## Content
-------------
+## API
 
-This repository contains the following:
+### `GET /reporting`
 
-* `main.py`: The main API code using FastAPI
-* `Dockerfile`: The Dockerfile for building the API image
-* `Makefile`: The Makefile for building and running the API
-* `run_curl.py`: A Python script for testing and interacting with the API
-* `requirements.txt`: The dependencies required by the API
-* `raw_data/`: A directory containing sample data files
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `start_date` | string | yes | First day of the report, `YYYY-MM-DD`. |
+| `end_date` | string | yes | Last day of the report, `YYYY-MM-DD`. |
+| `platform` | string | yes | `ios` or `android`. Any other value returns `422`. |
 
+A request returns between 1 and 10 report rows, one per generated campaign/creative.
 
-## How-To
---------
+```bash
+curl "http://127.0.0.1:8000/reporting?start_date=2025-05-01&end_date=2025-05-01&platform=ios"
+```
 
-### Setting up the API
+```json
+[
+  {
+    "installs": 1731,
+    "ad_spend": 442.71,
+    "clicks": 9880,
+    "impressions": 74301,
+    "click_convertion_rate": 17.52,
+    "click_through_rate": 13.30,
+    "impressions_convertion_rate": 2.33,
+    "limit_ad_tracking_installs": 214,
+    "uninstalls": 132,
+    "campaign_name": "synergize sticky platforms",
+    "creative_name": "Stand-alone zero tolerance framework",
+    "ad_network_name": "AppLovin",
+    "start_date": "2025-05-01",
+    "end_date": "2025-05-01",
+    "platform": "ios"
+  }
+]
+```
 
-1. Build the Docker image using `make build`
-2. Run the Docker container using `make run`
-3. The API will be available at `http://127.0.0.1:8000`
+### Data model
 
-Alternatively run `make all`
+Every row describes one campaign/creative on one platform and is generated as a
+physically consistent funnel:
 
-### Running API calls with the Python script
+- `impressions >= clicks >= installs`, and `uninstalls <= installs`.
+- `limit_ad_tracking_installs <= installs`.
+- `click_convertion_rate` = installs / clicks (%), `click_through_rate` = clicks /
+  impressions (%), `impressions_convertion_rate` = installs / impressions (%); all
+  three are in the range 0–100.
 
-1. Navigate to the root directory of the repository using `cd`
-2. Run the Python script using `python run_curl.py`
-3. Inspect the content of `raw_data/` folder
+`start_date`, `end_date` and `platform` echo the request. `campaign_name`,
+`creative_name` and `ad_network_name` are Faker-generated labels and do not refer to
+real campaigns or advertisers.
 
-### Tearing down the API
+## Repository contents
 
-1. Stop and remove the Docker container adn image using `make clean`
-2. Remove any temporary files or data created during testing
+| Path | Purpose |
+| --- | --- |
+| `main.py` | FastAPI app and `/reporting` endpoint. |
+| `run_curl.py` | Client that downloads reports for a date range into `raw_data/`. |
+| `tests/` | Funnel invariants, parameter validation and client URL tests. |
+| `Dockerfile`, `.dockerignore` | Runtime image. |
+| `Makefile` | `install-dev`, `build`, `run`, `test`, `lint`, `clean`. |
+| `requirements.txt`, `requirements-dev.txt` | Pinned runtime and development dependencies. |
+| `pyproject.toml` | Ruff and pytest configuration. |
+| `LICENSE` | MIT. |
+
+`raw_data/` is **generated output**, not sample data: `run_curl.py` writes one JSON file
+per day and platform there, and it is gitignored. No data files are shipped with the
+repository.
+
+## Running the downloader
+
+With the API running locally:
+
+```bash
+python run_curl.py \
+  --base-url http://127.0.0.1:8000 \
+  --start-date 2025-05-01 \
+  --end-date 2025-05-07 \
+  --output-dir raw_data
+```
+
+Point `--base-url` at any deployment of this API. The script fails on a non-2xx
+response rather than writing partial data.
+
+## Development
+
+```bash
+make lint    # ruff
+make test    # pytest
+```
+
+CI runs ruff, pytest on Python 3.11 and 3.12, and builds the Docker image on every pull
+request and on every push to `main`.
+
+## Limitations
+
+- Synthetic random data with no persistence, authentication or pagination.
+- A single endpoint; no write path, no deduplication and no notion of report latency.
+- Faker-generated names are placeholders, not a real ad-network taxonomy.
+
+## License
+
+[MIT](LICENSE) © 2026 Francesco Gastaldello

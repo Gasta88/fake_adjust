@@ -1,2 +1,20 @@
-.venv
+# Local virtual environments
+.venv/
+venv/
+
+# Generated API output (run_curl.py writes here)
 raw_data/
+
+# Python caches and test artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local environment files
+.env
+
+# OS
+.DS_Store
